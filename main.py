@@ -38,7 +38,7 @@ def fetch_current_settings():
             
             # Status
             status = settings.get("status", "online")
-            if status not in ["invisible", "offline"]:
+            if status not in ["offline"]:
                 last_status = status
             
             # Custom Status
@@ -138,7 +138,7 @@ async def discord_gateway():
                         
                         # Check status
                         new_status = settings.get("status", "online")
-                        if new_status not in ["invisible", "offline"]:
+                        if new_status not in ["offline"]:
                             if new_status != last_status:
                                 last_status = new_status
                                 print(f"Status changed: {last_status}")
