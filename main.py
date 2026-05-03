@@ -8,12 +8,15 @@ from flask import Flask
 
 # ================== SETTINGS ==================
 TOKEN = os.getenv("TOKEN")
-CUSTOM_STATUS = os.getenv("CUSTOM_STATUS", "Hello!")
-EMOJI = os.getenv("EMOJI", "")
 # ==============================================
 
 headers = {"Authorization": TOKEN}
-last_status = None
+
+# Last known values
+last_status = "online"
+last_custom_status = ""
+last_emoji = ""
+initialized = False
 
 r = requests.get("https://discord.com/api/v10/users/@me", headers=headers)
 if r.status_code != 200:
@@ -21,14 +24,42 @@ if r.status_code != 200:
     exit()
 
 user = r.json()
-print(f"Logged in as {user['username']} ({user['id']})")
+user_id = user["id"]
+print(f"Logged in as {user['username']} ({user_id})")
+
+# Fetch current status settings from API
+def fetch_current_settings():
+    global last_status, last_custom_status, last_emoji
+    try:
+        s = requests.get("https://discord.com/api/v10/users/@me/settings", headers=headers)
+        if s.status_code == 200:
+            settings = s.json()
+            
+            # Status
+            status = settings.get("status", "online")
+            if status not in ["invisible", "offline"]:
+                last_status = status
+            
+            # Custom Status
+            custom = settings.get("custom_status", {})
+            if custom:
+                last_custom_status = custom.get("text", "")
+                emoji = custom.get("emoji_name", "")
+                if emoji:
+                    last_emoji = emoji
+            
+            print(f"Fetched current settings | Status: {last_status} | Custom: {last_custom_status} | Emoji: {last_emoji}")
+    except Exception as e:
+        print(f"Could not fetch settings: {e}")
+
+fetch_current_settings()
 
 # ================== KEEP ALIVE ==================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return f"{user['username']} | Status: {last_status} | Custom: {CUSTOM_STATUS}"
+    return f"{user['username']} | Status: {last_status} | Custom: {last_custom_status} {last_emoji}"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -39,24 +70,29 @@ def keep_alive():
 # ================================================
 
 def build_activity():
+    # Return None if no custom status or emoji is set
+    if not last_custom_status and not last_emoji:
+        return None
     activity = {
         "name": "Custom Status",
         "type": 4,
-        "state": CUSTOM_STATUS,
+        "state": last_custom_status,
         "id": "custom"
     }
-    if EMOJI:
-        activity["emoji"] = {"name": EMOJI, "id": None, "animated": False}
+    # Add emoji if exists
+    if last_emoji:
+        activity["emoji"] = {"name": last_emoji, "id": None, "animated": False}
     return activity
 
 async def discord_gateway():
-    global last_status
+    global last_status, last_custom_status, last_emoji, initialized
     uri = "wss://gateway.discord.gg/?v=10&encoding=json"
 
     async with websockets.connect(uri) as ws:
         hello = json.loads(await ws.recv())
         heartbeat_interval = hello["d"]["heartbeat_interval"]
 
+        # Send heartbeat to keep connection alive
         async def heartbeat():
             while True:
                 await asyncio.sleep(heartbeat_interval / 1000)
@@ -64,8 +100,11 @@ async def discord_gateway():
 
         asyncio.create_task(heartbeat())
 
-        # change status
-        connect_status = last_status if last_status else "online"
+        # Connect with last known values
+        activities = []
+        act = build_activity()
+        if act:
+            activities.append(act)
 
         identify = {
             "op": 2,
@@ -77,70 +116,101 @@ async def discord_gateway():
                     "$device": "pc"
                 },
                 "presence": {
-                    "status": connect_status,
+                    "status": last_status,
                     "afk": False,
-                    "activities": [build_activity()]
+                    "activities": activities
                 }
             }
         }
         await ws.send(json.dumps(identify))
-        print(f"Connected | Status: {connect_status} | Custom: {CUSTOM_STATUS}")
+        print(f"Connected | Status: {last_status} | Custom: {last_custom_status} | Emoji: {last_emoji}")
 
-        async def refresh_status():
+        # Check settings from API every 60 seconds
+        async def check_settings():
+            global last_status, last_custom_status, last_emoji
             while True:
-                await asyncio.sleep(30)
-                # last_status None no refresh
-                if last_status is None:
-                    continue
-                update = {
-                    "op": 3,
-                    "d": {
-                        "since": None,
-                        "activities": [build_activity()],
-                        "status": last_status,
-                        "afk": False
-                    }
-                }
-                await ws.send(json.dumps(update))
-                print(f"Status refreshed | Status: {last_status} | Custom: {CUSTOM_STATUS}")
+                await asyncio.sleep(60)
+                try:
+                    s = requests.get("https://discord.com/api/v10/users/@me/settings", headers=headers)
+                    if s.status_code == 200:
+                        settings = s.json()
+                        
+                        # Check status
+                        new_status = settings.get("status", "online")
+                        if new_status not in ["invisible", "offline"]:
+                            if new_status != last_status:
+                                last_status = new_status
+                                print(f"Status changed: {last_status}")
+                                # Send new status to gateway
+                                activities = []
+                                act = build_activity()
+                                if act:
+                                    activities.append(act)
+                                update = {
+                                    "op": 3,
+                                    "d": {
+                                        "since": None,
+                                        "activities": activities,
+                                        "status": last_status,
+                                        "afk": False
+                                    }
+                                }
+                                await ws.send(json.dumps(update))
 
-        asyncio.create_task(refresh_status())
+                        # Check custom status
+                        custom = settings.get("custom_status", {})
+                        if custom:
+                            new_text = custom.get("text", "")
+                            new_emoji = custom.get("emoji_name", "")
+                            
+                            if new_text != last_custom_status or new_emoji != last_emoji:
+                                last_custom_status = new_text
+                                last_emoji = new_emoji
+                                print(f"Custom status changed: {last_custom_status} {last_emoji}")
+                                
+                                # Send updated activity to gateway
+                                activities = []
+                                act = build_activity()
+                                if act:
+                                    activities.append(act)
+                                update = {
+                                    "op": 3,
+                                    "d": {
+                                        "since": None,
+                                        "activities": activities,
+                                        "status": last_status,
+                                        "afk": False
+                                    }
+                                }
+                                await ws.send(json.dumps(update))
+                        else:
+                            # Custom status was cleared
+                            if last_custom_status or last_emoji:
+                                last_custom_status = ""
+                                last_emoji = ""
+                                print("Custom status cleared")
+                                update = {
+                                    "op": 3,
+                                    "d": {
+                                        "since": None,
+                                        "activities": [],
+                                        "status": last_status,
+                                        "afk": False
+                                    }
+                                }
+                                await ws.send(json.dumps(update))
 
+                except Exception as e:
+                    print(f"Settings check error: {e}")
+
+        asyncio.create_task(check_settings())
+
+        # Listen for incoming gateway events
         while True:
             msg = await ws.recv()
             data = json.loads(msg)
 
-            # READY event
-            if data.get("t") == "READY":
-                try:
-                    # take precence information
-                    presences = data["d"].get("presences", [])
-                    for p in presences:
-                        if p.get("user", {}).get("id") == user["id"]:
-                            status = p.get("status")
-                            if status and status not in ["invisible", "offline"]:
-                                last_status = status
-                                print(f"Initial status detected: {last_status}")
-                            break
-
-                    # if precense empty, accept as empty
-                    if last_status is None:
-                        last_status = "online"
-                        print(f"No initial status found, defaulting to: {last_status}")
-                except Exception as e:
-                    print(f"Error reading READY: {e}")
-                    last_status = "online"
-
-            # PRESENCE_UPDATE - change status only if update
-            if data.get("t") == "PRESENCE_UPDATE":
-                presence = data.get("d", {})
-                if presence.get("user", {}).get("id") == user["id"]:
-                    new_status = presence.get("status")
-                    if new_status and new_status not in ["invisible", "offline"]:
-                        if new_status != last_status:
-                            last_status = new_status
-                            print(f"Status changed: {last_status}")
-
+            # Heartbeat acknowledged
             if data.get("op") == 11:
                 continue
 
@@ -148,6 +218,7 @@ async def discord_gateway():
 
 keep_alive()
 
+# Reconnect loop
 while True:
     try:
         asyncio.run(discord_gateway())
