@@ -8,29 +8,27 @@ from flask import Flask
 
 # ================== SETTINGS ==================
 TOKEN = os.getenv("TOKEN")
-# ============================================
+CUSTOM_STATUS = os.getenv("CUSTOM_STATUS", "Hello!")
+EMOJI = os.getenv("EMOJI", "")
+# ==============================================
 
 headers = {"Authorization": TOKEN}
-
-# Starter value
-last_status = "online"
-last_custom_status = ""
-last_emoji = ""
+last_status = None  # Başlangıçta None, Discord'dan öğreneceğiz
 
 r = requests.get("https://discord.com/api/v10/users/@me", headers=headers)
 if r.status_code != 200:
-    print("Invalid token")
+    print("Invalid token!")
     exit()
 
 user = r.json()
-print(f"✅ Logged in as {user['username']} ({user['id']})")
+print(f"Logged in as {user['username']} ({user['id']})")
 
 # ================== KEEP ALIVE ==================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return f"{user['username']} | Status: {last_status} | Custom: {last_custom_status}"
+    return f"{user['username']} | Status: {last_status} | Custom: {CUSTOM_STATUS}"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -38,29 +36,27 @@ def run():
 def keep_alive():
     server = Thread(target=run)
     server.start()
-# ===============================================
+# ================================================
 
 def build_activity():
-    """Mevcut custom status ve emoji ile activity objesi oluştur"""
     activity = {
         "name": "Custom Status",
         "type": 4,
-        "state": last_custom_status,
+        "state": CUSTOM_STATUS,
         "id": "custom"
     }
-    if last_emoji:
-        activity["emoji"] = {"name": last_emoji, "id": None, "animated": False}
+    if EMOJI:
+        activity["emoji"] = {"name": EMOJI, "id": None, "animated": False}
     return activity
 
 async def discord_gateway():
-    global last_status, last_custom_status, last_emoji
+    global last_status
     uri = "wss://gateway.discord.gg/?v=10&encoding=json"
 
     async with websockets.connect(uri) as ws:
         hello = json.loads(await ws.recv())
         heartbeat_interval = hello["d"]["heartbeat_interval"]
 
-        # Heartbeat
         async def heartbeat():
             while True:
                 await asyncio.sleep(heartbeat_interval / 1000)
@@ -68,7 +64,10 @@ async def discord_gateway():
 
         asyncio.create_task(heartbeat())
 
-        # Connect last identification
+        # last_status None ise online ile başla
+        # None değilse son bilinen status ile bağlan
+        connect_status = last_status if last_status else "online"
+
         identify = {
             "op": 2,
             "d": {
@@ -79,61 +78,74 @@ async def discord_gateway():
                     "$device": "pc"
                 },
                 "presence": {
-                    "status": last_status,
+                    "status": connect_status,
                     "afk": False,
                     "activities": [build_activity()]
                 }
             }
         }
         await ws.send(json.dumps(identify))
-        print(f"Connected! | Status: {last_status} | Custom: {last_custom_status}")
+        print(f"Connected | Status: {connect_status} | Custom: {CUSTOM_STATUS}")
+
+        async def refresh_status():
+            while True:
+                await asyncio.sleep(30)
+                # last_status None ise refresh yapma
+                if last_status is None:
+                    continue
+                update = {
+                    "op": 3,
+                    "d": {
+                        "since": None,
+                        "activities": [build_activity()],
+                        "status": last_status,
+                        "afk": False
+                    }
+                }
+                await ws.send(json.dumps(update))
+                print(f"Status refreshed | Status: {last_status} | Custom: {CUSTOM_STATUS}")
+
+        asyncio.create_task(refresh_status())
 
         while True:
             msg = await ws.recv()
             data = json.loads(msg)
 
-            # Status Change
+            # READY eventi - ilk bağlanınca mevcut status'u al
+            if data.get("t") == "READY":
+                try:
+                    # Kendi presence bilgimizi al
+                    presences = data["d"].get("presences", [])
+                    for p in presences:
+                        if p.get("user", {}).get("id") == user["id"]:
+                            status = p.get("status")
+                            if status and status not in ["invisible", "offline"]:
+                                last_status = status
+                                print(f"Initial status detected: {last_status}")
+                            break
+
+                    # Presences boşsa online kabul et
+                    if last_status is None:
+                        last_status = "online"
+                        print(f"No initial status found, defaulting to: {last_status}")
+                except Exception as e:
+                    print(f"Error reading READY: {e}")
+                    last_status = "online"
+
+            # PRESENCE_UPDATE - sen status değiştirince yakala
             if data.get("t") == "PRESENCE_UPDATE":
                 presence = data.get("d", {})
-                
                 if presence.get("user", {}).get("id") == user["id"]:
-                    
-                    # Online/Idle/DND changes
                     new_status = presence.get("status")
-                    if new_status and new_status != "invisible":
+                    if new_status and new_status not in ["invisible", "offline"]:
                         if new_status != last_status:
                             last_status = new_status
-                            print(f"🔄 Status değişti: {last_status}")
-
-                    # Custom status
-                    activities = presence.get("activities", [])
-                    for act in activities:
-                        if act.get("type") == 4:
-                            
-                            # Writing
-                            new_custom = act.get("state", "")
-                            if new_custom != last_custom_status:
-                                last_custom_status = new_custom
-                                print(f"Custom Status changed to: {last_custom_status}")
-                            
-                            # Emoji Changes
-                            new_emoji = act.get("emoji", {})
-                            if new_emoji:
-                                emoji_name = new_emoji.get("name", "")
-                                if emoji_name != last_emoji:
-                                    last_emoji = emoji_name
-                                    print(f"Emote Changed to: {last_emoji}")
-                            else:
-                                # if emoji is removed
-                                if last_emoji:
-                                    last_emoji = ""
-                                    print("Emote Removed")
-                            break
+                            print(f"Status changed: {last_status}")
 
             if data.get("op") == 11:
                 continue
 
-    print("Connection failed! trying to connect")
+    print("Connection lost, reconnecting...")
 
 keep_alive()
 
@@ -141,5 +153,5 @@ while True:
     try:
         asyncio.run(discord_gateway())
     except Exception as e:
-        print("Hata:", e)
+        print(f"Error: {e}")
         asyncio.sleep(5)
