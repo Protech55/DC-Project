@@ -6,6 +6,7 @@ import websockets
 from threading import Thread
 from flask import Flask
 
+# Script Was made by Protech55
 # ================== SETTINGS ==================
 TOKEN = os.getenv("TOKEN")
 # ==============================================
