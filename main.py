@@ -225,4 +225,4 @@ while True:
         asyncio.run(discord_gateway())
     except Exception as e:
         print(f"Error: {e}")
-        asyncio.sleep(5)
+        time.sleep(5)
