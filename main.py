@@ -130,7 +130,7 @@ async def discord_gateway():
         async def check_settings():
             global last_status, last_custom_status, last_emoji
             while True:
-                await asyncio.sleep(60)
+                await asyncio.sleep(15)
                 try:
                     s = requests.get("https://discord.com/api/v10/users/@me/settings", headers=headers)
                     if s.status_code == 200:
