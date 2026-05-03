@@ -13,7 +13,7 @@ EMOJI = os.getenv("EMOJI", "")
 # ==============================================
 
 headers = {"Authorization": TOKEN}
-last_status = None  # Başlangıçta None, Discord'dan öğreneceğiz
+last_status = None
 
 r = requests.get("https://discord.com/api/v10/users/@me", headers=headers)
 if r.status_code != 200:
@@ -64,8 +64,7 @@ async def discord_gateway():
 
         asyncio.create_task(heartbeat())
 
-        # last_status None ise online ile başla
-        # None değilse son bilinen status ile bağlan
+        # change status
         connect_status = last_status if last_status else "online"
 
         identify = {
@@ -90,7 +89,7 @@ async def discord_gateway():
         async def refresh_status():
             while True:
                 await asyncio.sleep(30)
-                # last_status None ise refresh yapma
+                # last_status None no refresh
                 if last_status is None:
                     continue
                 update = {
@@ -111,10 +110,10 @@ async def discord_gateway():
             msg = await ws.recv()
             data = json.loads(msg)
 
-            # READY eventi - ilk bağlanınca mevcut status'u al
+            # READY event
             if data.get("t") == "READY":
                 try:
-                    # Kendi presence bilgimizi al
+                    # take precence information
                     presences = data["d"].get("presences", [])
                     for p in presences:
                         if p.get("user", {}).get("id") == user["id"]:
@@ -124,7 +123,7 @@ async def discord_gateway():
                                 print(f"Initial status detected: {last_status}")
                             break
 
-                    # Presences boşsa online kabul et
+                    # if precense empty, accept as empty
                     if last_status is None:
                         last_status = "online"
                         print(f"No initial status found, defaulting to: {last_status}")
@@ -132,7 +131,7 @@ async def discord_gateway():
                     print(f"Error reading READY: {e}")
                     last_status = "online"
 
-            # PRESENCE_UPDATE - sen status değiştirince yakala
+            # PRESENCE_UPDATE - change status only if update
             if data.get("t") == "PRESENCE_UPDATE":
                 presence = data.get("d", {})
                 if presence.get("user", {}).get("id") == user["id"]:
