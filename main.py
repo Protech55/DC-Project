@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import requests
+import time
 import websockets
 from threading import Thread
 from flask import Flask
@@ -63,7 +64,8 @@ def home():
     return f"{user['username']} | Status: {last_status} | Custom: {last_custom_status} {last_emoji}"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     server = Thread(target=run)
@@ -89,7 +91,8 @@ async def discord_gateway():
     global last_status, last_custom_status, last_emoji, initialized
     uri = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-    async with websockets.connect(uri) as ws:
+    # Increase max message size to inf to handle large Discord payloads
+    async with websockets.connect(uri, max_size=None) as ws:
         hello = json.loads(await ws.recv())
         heartbeat_interval = hello["d"]["heartbeat_interval"]
 
@@ -126,7 +129,7 @@ async def discord_gateway():
         await ws.send(json.dumps(identify))
         print(f"Connected | Status: {last_status} | Custom: {last_custom_status} | Emoji: {last_emoji}")
 
-        # Check settings from API every 60 seconds
+        # Check settings from API every 15 seconds
         async def check_settings():
             global last_status, last_custom_status, last_emoji
             while True:
