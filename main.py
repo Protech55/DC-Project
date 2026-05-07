@@ -12,8 +12,6 @@ from flask import Flask, render_template_string
 TOKENS = [
     os.getenv("TOKEN1"),
     os.getenv("TOKEN2"),
-    os.getenv("TOKEN3"),
-    os.getenv("TOKEN4"),
 ]
 # ==============================================
 
