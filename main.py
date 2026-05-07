@@ -8,7 +8,6 @@ from threading import Thread
 from flask import Flask, render_template_string
 # Script was made by Protech55
 # ================== SETTINGS ==================
-# İstediğin kadar token ekleyebilirsin
 TOKENS = [
     os.getenv("TOKEN1"),
     os.getenv("TOKEN2"),
@@ -45,7 +44,7 @@ if not accounts:
     print("No valid accounts found! Exiting...")
     exit()
 
-# ================== FLASK (More Natural Look) ==================
+
 app = Flask('')
 
 HTML_TEMPLATE = """
@@ -95,7 +94,7 @@ def run():
 def keep_alive():
     server = Thread(target=run)
     server.start()
-# ================================================
+
 
 def build_activity(acc):
     if not acc["last_custom_status"] and not acc["last_emoji"]:
@@ -130,7 +129,7 @@ async def run_account(acc):
 
                 asyncio.create_task(heartbeat())
 
-                # İlk bağlantı
+
                 identify = {
                     "op": 2,
                     "d": {
@@ -146,7 +145,7 @@ async def run_account(acc):
                 await ws.send(json.dumps(identify))
                 print(f"✅ {username} | Connected | Status: {acc['last_status']}")
 
-                # Her 12 saniyede bir ayarları kontrol et
+ 
                 async def check_settings():
                     while True:
                         await asyncio.sleep(12)
