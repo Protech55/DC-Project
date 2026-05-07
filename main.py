@@ -37,7 +37,7 @@ for i, token in enumerate(TOKENS, 1):
         "user": user,
         "last_status": "online",
         "last_custom_status": "Running 24/7",
-        "last_emoji": "⚡"
+        "last_emoji": ""
     })
 
 if not accounts:
@@ -116,7 +116,7 @@ async def run_account(acc):
         try:
             async with websockets.connect(
                 "wss://gateway.discord.gg/?v=10&encoding=json",
-                max_size=None                    # Sınırsız mesaj boyutu
+                max_size=None                   
             ) as ws:
                 
                 hello = json.loads(await ws.recv())
@@ -173,7 +173,7 @@ async def run_account(acc):
                                         acc["last_custom_status"] = new_text
                                         acc["last_emoji"] = new_emoji
                                         changed = True
-                                        print(f"✏️ {username} | Custom changed → {new_text} {new_emoji}")
+                                        print(f" {username} | Custom changed → {new_text} {new_emoji}")
 
                                 if changed:
                                     update = {
