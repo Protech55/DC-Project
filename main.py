@@ -203,5 +203,5 @@ async def run_account(acc):
 
 keep_alive()
 
-# Tüm hesapları paralel çalıştır
+
 asyncio.run(asyncio.gather(*(run_account(acc) for acc in accounts)))
