@@ -6,7 +6,7 @@ import time
 import websockets
 from threading import Thread
 from flask import Flask, render_template_string
-# Script was made by Protech55
+
 # ================== SETTINGS ==================
 TOKENS = [
     os.getenv("TOKEN1"),
@@ -15,7 +15,6 @@ TOKENS = [
 # ==============================================
 
 accounts = []
-headers_list = []
 
 for i, token in enumerate(TOKENS, 1):
     if not token:
@@ -32,19 +31,38 @@ for i, token in enumerate(TOKENS, 1):
     user = r.json()
     print(f"Logged in as {user['username']} ({user['id']})")
     
+    # Fetch initial settings from Discord
+    last_status = "online"
+    last_custom_status = ""
+    last_emoji = ""
+    
+    try:
+        s = requests.get("https://discord.com/api/v10/users/@me/settings", headers=headers)
+        if s.status_code == 200:
+            settings = s.json()
+            status = settings.get("status", "online")
+            if status not in ["offline"]:
+                last_status = status
+            custom = settings.get("custom_status", {})
+            if custom:
+                last_custom_status = custom.get("text", "")
+                last_emoji = custom.get("emoji_name", "") or ""
+    except:
+        pass
+    
     accounts.append({
         "token": token,
         "user": user,
-        "last_status": "online",
-        "last_custom_status": "Running 24/7",
-        "last_emoji": ""
+        "last_status": last_status,
+        "last_custom_status": last_custom_status,
+        "last_emoji": last_emoji
     })
 
 if not accounts:
-    print("No valid accounts found! Exiting...")
+    print("No valid accounts found!")
     exit()
 
-
+# ================== FLASK ==================
 app = Flask('')
 
 HTML_TEMPLATE = """
@@ -94,7 +112,7 @@ def run():
 def keep_alive():
     server = Thread(target=run)
     server.start()
-
+# ===========================================
 
 def build_activity(acc):
     if not acc["last_custom_status"] and not acc["last_emoji"]:
@@ -106,7 +124,7 @@ def build_activity(acc):
         "id": "custom"
     }
     if acc["last_emoji"]:
-        activity["emoji"] = {"name": acc["last_emoji"]}
+        activity["emoji"] = {"name": acc["last_emoji"], "id": None, "animated": False}
     return activity
 
 async def run_account(acc):
@@ -116,7 +134,7 @@ async def run_account(acc):
         try:
             async with websockets.connect(
                 "wss://gateway.discord.gg/?v=10&encoding=json",
-                max_size=None                   
+                max_size=None
             ) as ws:
                 
                 hello = json.loads(await ws.recv())
@@ -129,26 +147,33 @@ async def run_account(acc):
 
                 asyncio.create_task(heartbeat())
 
+                activities = []
+                act = build_activity(acc)
+                if act:
+                    activities.append(act)
 
                 identify = {
                     "op": 2,
                     "d": {
                         "token": acc["token"],
-                        "properties": {"$os": "linux", "$browser": "chrome", "$device": "pc"},
+                        "properties": {
+                            "$os": "linux",
+                            "$browser": "chrome",
+                            "$device": "pc"
+                        },
                         "presence": {
                             "status": acc["last_status"],
                             "afk": False,
-                            "activities": [build_activity(acc)] if build_activity(acc) else []
+                            "activities": activities
                         }
                     }
                 }
                 await ws.send(json.dumps(identify))
-                print(f"✅ {username} | Connected | Status: {acc['last_status']}")
+                print(f"{username} | Connected | Status: {acc['last_status']} | Custom: {acc['last_custom_status']} {acc['last_emoji']}")
 
- 
                 async def check_settings():
                     while True:
-                        await asyncio.sleep(12)
+                        await asyncio.sleep(15)
                         try:
                             s = requests.get(
                                 "https://discord.com/api/v10/users/@me/settings",
@@ -163,31 +188,41 @@ async def run_account(acc):
                                     if new_status != acc["last_status"]:
                                         acc["last_status"] = new_status
                                         changed = True
-                                        print(f"🔄 {username} | Status changed → {new_status}")
+                                        print(f"{username} | Status changed: {new_status}")
 
                                 custom = settings.get("custom_status", {})
                                 if custom:
                                     new_text = custom.get("text", "")
-                                    new_emoji = custom.get("emoji_name", "")
+                                    new_emoji = custom.get("emoji_name", "") or ""
                                     if new_text != acc["last_custom_status"] or new_emoji != acc["last_emoji"]:
                                         acc["last_custom_status"] = new_text
                                         acc["last_emoji"] = new_emoji
                                         changed = True
-                                        print(f" {username} | Custom changed → {new_text} {new_emoji}")
+                                        print(f"{username} | Custom changed: {new_text} {new_emoji}")
+                                else:
+                                    if acc["last_custom_status"] or acc["last_emoji"]:
+                                        acc["last_custom_status"] = ""
+                                        acc["last_emoji"] = ""
+                                        changed = True
+                                        print(f"{username} | Custom status cleared")
 
                                 if changed:
+                                    activities = []
+                                    act = build_activity(acc)
+                                    if act:
+                                        activities.append(act)
                                     update = {
                                         "op": 3,
                                         "d": {
                                             "since": None,
-                                            "activities": [build_activity(acc)] if build_activity(acc) else [],
+                                            "activities": activities,
                                             "status": acc["last_status"],
                                             "afk": False
                                         }
                                     }
                                     await ws.send(json.dumps(update))
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"{username} | Settings check error: {e}")
 
                 asyncio.create_task(check_settings())
 
@@ -198,10 +233,18 @@ async def run_account(acc):
                         continue
 
         except Exception as e:
-            print(f"❌ {username} | Connection lost: {e}")
+            print(f"{username} | Connection lost: {e}")
             await asyncio.sleep(5)
+
+async def main():
+    tasks = [run_account(acc) for acc in accounts]
+    await asyncio.gather(*tasks)
 
 keep_alive()
 
-
-asyncio.run(asyncio.gather(*(run_account(acc) for acc in accounts)))
+while True:
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"Main loop error: {e}")
+        time.sleep(5)
