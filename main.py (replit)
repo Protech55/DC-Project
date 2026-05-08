@@ -1,0 +1,336 @@
+import asyncio
+import json
+import json as json_lib
+import os
+import requests
+import time
+import websockets
+from threading import Thread
+from flask import Flask, render_template_string
+
+
+#Script was made by Protech55 Works
+#timeout & refresh has been remode for replit
+TOKENS = [
+    os.getenv("TOKEN1"),
+    os.getenv("TOKEN2"),
+    os.getenv("TOKEN3"),
+    os.getenv("TOKEN4"),
+]
+STATUS_FILE = "status_cache.json"
+
+
+def load_cache():
+    try:
+        if os.path.exists(STATUS_FILE):
+            with open(STATUS_FILE, "r") as f:
+                return json_lib.load(f)
+    except:
+        pass
+    return {}
+
+
+def save_cache(accs):
+    try:
+        cache = {}
+        for acc in accs:
+            user_id = acc["user"]["id"]
+            cache[user_id] = {
+                "status": acc["last_status"],
+                "custom": acc["last_custom_status"],
+                "emoji": acc["last_emoji"]
+            }
+        with open(STATUS_FILE, "w") as f:
+            json_lib.dump(cache, f)
+    except Exception as e:
+        print(f"Cache save error: {e}")
+
+
+cache = load_cache()
+accounts = []
+
+for i, token in enumerate(TOKENS, 1):
+    if not token:
+        print(f"TOKEN{i} is empty, skipping...")
+        continue
+
+    headers = {"Authorization": token}
+    try:
+        r = requests.get("https://discord.com/api/v10/users/@me", headers=headers, timeout=10)
+    except Exception as e:
+        print(f"TOKEN{i} initial check failed: {e}")
+        continue
+
+    if r.status_code != 200:
+        print(f"TOKEN{i} is invalid!")
+        continue
+
+    user = r.json()
+    user_id = user["id"]
+    print(f"Logged in as {user['username']} ({user_id})")
+
+    last_status = "online"
+    last_custom_status = ""
+    last_emoji = ""
+
+    if user_id in cache:
+        last_status = cache[user_id].get("status", "online")
+        last_custom_status = cache[user_id].get("custom", "")
+        last_emoji = cache[user_id].get("emoji", "")
+        print(f"  Loaded from cache: {last_status} | {last_custom_status} {last_emoji}")
+
+    try:
+        s = requests.get("https://discord.com/api/v10/users/@me/settings", headers=headers, timeout=10)
+        if s.status_code == 200:
+            settings = s.json()
+            status = settings.get("status", "online")
+            if status not in ["offline"]:
+                last_status = status
+            custom = settings.get("custom_status", {})
+            if custom:
+                last_custom_status = custom.get("text", "")
+                last_emoji = custom.get("emoji_name", "") or ""
+            print(f"  Fetched from Discord: {last_status} | {last_custom_status} {last_emoji}")
+    except:
+        pass
+
+    accounts.append({
+        "token": token,
+        "user": user,
+        "last_status": last_status,
+        "last_custom_status": last_custom_status,
+        "last_emoji": last_emoji
+    })
+
+if not accounts:
+    print("No valid accounts found!")
+    exit()
+
+save_cache(accounts)
+
+app = Flask('')
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Status Manager</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f0f0f; color: #00ff9d; text-align: center; padding: 40px; }
+        h1 { color: #00ff9d; }
+        .account { background: #1a1a1a; margin: 15px auto; padding: 15px; border-radius: 8px; max-width: 600px; }
+    </style>
+</head>
+<body>
+    <h1>Discord 24/7 Status Manager</h1>
+    <p>Service is running smoothly.</p>
+    {% for acc in accounts %}
+    <div class="account">
+        <strong>{{ acc.username }}</strong><br>
+        Status: {{ acc.status }} | Custom: {{ acc.custom }} {{ acc.emoji }}
+    </div>
+    {% endfor %}
+</body>
+</html>
+"""
+
+
+@app.route('/')
+def home():
+    data = []
+    for acc in accounts:
+        data.append({
+            "username": acc["user"]["username"],
+            "status": acc["last_status"],
+            "custom": acc["last_custom_status"],
+            "emoji": acc["last_emoji"]
+        })
+    return render_template_string(HTML_TEMPLATE, accounts=data)
+
+
+@app.route('/health')
+def health():
+    return {"status": "ok", "accounts": len(accounts)}, 200
+
+
+def run():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+
+def keep_alive():
+    server = Thread(target=run)
+    server.daemon = True
+    server.start()
+
+
+def build_activity(acc):
+    if not acc["last_custom_status"] and not acc["last_emoji"]:
+        return None
+    activity = {
+        "name": "Custom Status",
+        "type": 4,
+        "state": acc["last_custom_status"],
+        "id": "custom"
+    }
+    if acc["last_emoji"]:
+        activity["emoji"] = {"name": acc["last_emoji"], "id": None, "animated": False}
+    return activity
+
+
+async def run_account(acc):
+    username = acc["user"]["username"]
+    reconnect_delay = 5
+
+    while True:
+        try:
+            async with websockets.connect(
+                "wss://gateway.discord.gg/?v=10&encoding=json",
+                max_size=None,
+                ping_interval=20,
+                ping_timeout=60,
+                close_timeout=10,
+                open_timeout=30
+            ) as ws:
+
+                hello = json.loads(await ws.recv())
+                heartbeat_interval = hello["d"]["heartbeat_interval"]
+                reconnect_delay = 5
+
+                async def heartbeat():
+                    try:
+                        while True:
+                            await asyncio.sleep(heartbeat_interval / 1000)
+                            await ws.send(json.dumps({"op": 1, "d": None}))
+                    except:
+                        return
+
+                hb_task = asyncio.create_task(heartbeat())
+
+                activities = []
+                act = build_activity(acc)
+                if act:
+                    activities.append(act)
+
+                identify = {
+                    "op": 2,
+                    "d": {
+                        "token": acc["token"],
+                        "properties": {
+                            "$os": "linux",
+                            "$browser": "chrome",
+                            "$device": "pc"
+                        },
+                        "presence": {
+                            "status": acc["last_status"],
+                            "afk": False,
+                            "activities": activities
+                        }
+                    }
+                }
+                await ws.send(json.dumps(identify))
+                print(f"{username} | Connected | Status: {acc['last_status']} | Custom: {acc['last_custom_status']} {acc['last_emoji']}")
+
+                async def check_settings():
+                    try:
+                        while True:
+                            await asyncio.sleep(15)
+                            try:
+                                s = requests.get(
+                                    "https://discord.com/api/v10/users/@me/settings",
+                                    headers={"Authorization": acc["token"]},
+                                    timeout=10
+                                )
+                                if s.status_code == 200:
+                                    settings = s.json()
+                                    changed = False
+
+                                    new_status = settings.get("status", "online")
+                                    if new_status not in ["offline"]:
+                                        if new_status != acc["last_status"]:
+                                            acc["last_status"] = new_status
+                                            changed = True
+                                            print(f"{username} | Status changed: {new_status}")
+
+                                    custom = settings.get("custom_status", {})
+                                    if custom:
+                                        new_text = custom.get("text", "")
+                                        new_emoji = custom.get("emoji_name", "") or ""
+                                        if new_text != acc["last_custom_status"] or new_emoji != acc["last_emoji"]:
+                                            acc["last_custom_status"] = new_text
+                                            acc["last_emoji"] = new_emoji
+                                            changed = True
+                                            print(f"{username} | Custom changed: {new_text} {new_emoji}")
+                                    else:
+                                        if acc["last_custom_status"] or acc["last_emoji"]:
+                                            acc["last_custom_status"] = ""
+                                            acc["last_emoji"] = ""
+                                            changed = True
+                                            print(f"{username} | Custom status cleared")
+
+                                    if changed:
+                                        save_cache(accounts)
+                                        activities = []
+                                        act = build_activity(acc)
+                                        if act:
+                                            activities.append(act)
+                                        update = {
+                                            "op": 3,
+                                            "d": {
+                                                "since": None,
+                                                "activities": activities,
+                                                "status": acc["last_status"],
+                                                "afk": False
+                                            }
+                                        }
+                                        await ws.send(json.dumps(update))
+                            except:
+                                pass
+                    except:
+                        return
+
+                cs_task = asyncio.create_task(check_settings())
+
+                try:
+                    while True:
+                        msg = await ws.recv()
+                        data = json.loads(msg)
+                        if data.get("op") == 11:
+                            continue
+                        if data.get("op") == 7:
+                            print(f"{username} | Discord requested reconnect")
+                            break
+                        if data.get("op") == 9:
+                            print(f"{username} | Invalid session, re-identifying")
+                            break
+                finally:
+                    hb_task.cancel()
+                    cs_task.cancel()
+
+        except websockets.exceptions.ConnectionClosed as e:
+            print(f"{username} | Connection closed: {e.code}")
+        except asyncio.TimeoutError:
+            print(f"{username} | Connection timeout")
+        except Exception as e:
+            print(f"{username} | Error: {type(e).__name__}: {e}")
+
+        print(f"{username} | Reconnecting in {reconnect_delay}s...")
+        await asyncio.sleep(reconnect_delay)
+        reconnect_delay = min(reconnect_delay * 2, 60)
+
+
+async def main():
+    tasks = [run_account(acc) for acc in accounts]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+keep_alive()
+
+while True:
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        break
+    except Exception as e:
+        print(f"Main loop error: {e}")
+        time.sleep(5)
