@@ -1,1 +1,2 @@
+#automatically saves changes from last session when offline.
 STATUS_FILE = "/tmp/status_cache.json"
